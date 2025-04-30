@@ -61,15 +61,65 @@ class MyPortfolio:
         # Get the assets by excluding the specified column
         assets = self.price.columns[self.price.columns != self.exclude]
 
-        # Calculate the portfolio weights
-        self.portfolio_weights = pd.DataFrame(
-            index=self.price.index, columns=self.price.columns
-        )
+        # Prepare DataFrame for weights
+        self.portfolio_weights = pd.DataFrame(index=self.price.index, columns=self.price.columns).fillna(0)
+
 
         """
         TODO: Complete Task 4 Below
         """
 
+        # Parameters for time-series momentum
+        lookback_short = 126   # ~6 months trading days
+        lookback_long = 252    # ~12 months trading days
+        target_vol = 0.10      # target annualized volatility
+
+        # Ensure enough history: at least 1 year
+        start_offset = max(self.lookback, lookback_long)
+        for t in range(start_offset, len(self.price)):
+            date = self.price.index[t]
+            # slicing historical window up to t
+            hist = self.price.iloc[t - lookback_long:t]
+            rets = hist.pct_change().dropna()
+            # compute volatilities (annualized)
+            vol = rets.std() * np.sqrt(252)
+            # compute time-series momentum signals
+            mom_short = (self.price[assets].iloc[t] / self.price[assets].iloc[t - lookback_short] - 1)
+            mom_long = (self.price[assets].iloc[t] / self.price[assets].iloc[t - lookback_long] - 1)
+            signal = 0.5 * mom_short + 0.5 * mom_long
+            # replace NaNs
+            signal = signal.fillna(0)
+            # volatility scaling
+            scale = target_vol / vol.replace(0, np.nan)
+            scaled_signal = signal * scale
+            # risk parity: weight by inverse volatility among positive signals
+            positive = scaled_signal[scaled_signal > 0]
+            if len(positive) > 0:
+                inv_vol = 1 / vol[positive.index]
+                # combine scaled_signal with inv_vol to adjust weighting
+                raw_w = scaled_signal[positive.index] * inv_vol
+                w = raw_w / raw_w.sum()
+                # assign weights
+                for a, wei in w.items():
+                    self.portfolio_weights.at[date, a] = wei
+            else:
+                # fallback: equal weight to 3 lowest vol assets
+                lows = vol.nsmallest(3).index
+                self.portfolio_weights.loc[date, lows] = 1 / 3
+
+        # initial period: equal weight among assets
+        init_dates = self.price.index[:start_offset]
+        self.portfolio_weights.loc[init_dates, assets] = 1 / len(assets)
+        # ensure SPY excluded
+        self.portfolio_weights[self.exclude] = 0
+        # forward-fill orphan days
+        self.portfolio_weights.ffill(inplace=True)
+        # normalize daily exposures
+        for idx in self.portfolio_weights.index:
+            tot = self.portfolio_weights.loc[idx, assets].sum()
+            if tot > 0:
+                self.portfolio_weights.loc[idx, assets] /= tot
+                
         """
         TODO: Complete Task 4 Above
         """
